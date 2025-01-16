@@ -4,6 +4,7 @@ import random
 import string
 from functools import partial
 import json
+import itertools
 
 class ScrabbyGame:
     def __init__(self, root):
@@ -15,6 +16,16 @@ class ScrabbyGame:
         self.score = 0
         self.current_word = ""
         self.selected_letter = None
+        
+        # Load word list
+        self.valid_words = set()
+        try:
+            with open('wordlist.txt', 'r') as f:
+                self.valid_words = set(word.strip().upper() for word in f if len(word.strip()) >= 2)
+            print(f"Loaded {len(self.valid_words)} valid words")
+        except FileNotFoundError:
+            messagebox.showerror("Error", "Scrabble word list not found. Please ensure wordlist.txt is in the same directory.")
+            self.root.quit()
         
         # Board size and square size
         self.BOARD_SIZE = 15
@@ -77,24 +88,47 @@ class ScrabbyGame:
             font=('Helvetica', 24, 'bold')
         )
         self.score_label.grid(row=0, column=1, padx=5)
-        
-        # Current word score
-        current_word_frame = ttk.Frame(self.left_panel)
-        current_word_frame.grid(row=1, column=0, pady=5, sticky="ew")
-        
-        self.word_display = ttk.Label(
-            current_word_frame,
-            text="",
-            font=('Helvetica', 16, 'bold')
+
+        # Best possible word frame
+        best_word_frame = ttk.Frame(self.left_panel)
+        best_word_frame.grid(row=1, column=0, pady=5, sticky="nsew")
+        best_word_frame.grid_columnconfigure(0, weight=1)
+        best_word_frame.grid_rowconfigure(1, weight=1)
+
+        best_word_label = ttk.Label(
+            best_word_frame,
+            text="Possible Words:",
+            font=('Helvetica', 12)
         )
-        self.word_display.grid(row=0, column=0, pady=5)
-        
-        self.word_score_label = ttk.Label(
-            current_word_frame,
-            text="",
-            font=('Helvetica', 14)
+        best_word_label.grid(row=0, column=0, padx=5, sticky='w')
+
+        # Create Treeview with scrollbar
+        tree_frame = ttk.Frame(best_word_frame)
+        tree_frame.grid(row=1, column=0, sticky='nsew', padx=5, pady=5)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
+
+        # Create Treeview
+        self.word_tree = ttk.Treeview(
+            tree_frame,
+            columns=('word', 'score'),
+            show='headings',
+            height=8
         )
-        self.word_score_label.grid(row=1, column=0, pady=5)
+        self.word_tree.heading('word', text='Word')
+        self.word_tree.heading('score', text='Score')
+        self.word_tree.column('word', width=100)
+        self.word_tree.column('score', width=50)
+        self.word_tree.grid(row=0, column=0, sticky='nsew')
+
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(
+            tree_frame,
+            orient='vertical',
+            command=self.word_tree.yview
+        )
+        scrollbar.grid(row=0, column=1, sticky='ns')
+        self.word_tree.configure(yscrollcommand=scrollbar.set)
 
         # Legend frame
         legend_frame = ttk.LabelFrame(self.left_panel, text="Special Squares", padding="10")
@@ -153,6 +187,13 @@ class ScrabbyGame:
             command=self.load_game
         )
         self.load_button.grid(row=0, column=1, padx=5)
+
+        self.clear_game_button = ttk.Button(
+            save_load_frame,
+            text="Clear Game",
+            command=self.clear_game
+        )
+        self.clear_game_button.grid(row=0, column=2, padx=5)
 
         # Board frame (center panel)
         self.board_frame = ttk.Frame(self.main_frame)
@@ -246,7 +287,6 @@ class ScrabbyGame:
         # Create game state dictionary
         game_state = {
             'score': self.score,
-            'current_word': self.current_word,
             'board_state': {},
             'rack_letters': []
         }
@@ -260,8 +300,9 @@ class ScrabbyGame:
 
         # Save rack letters
         for widget in self.tiles_frame.winfo_children():
-            if isinstance(widget, ttk.Button):
-                letter = widget['text'].split('\n')[0]  # Get just the letter, not the score
+            if isinstance(widget, ttk.Frame):
+                entry = widget.grid_slaves(row=0, column=0)[0]
+                letter = entry.get()
                 game_state['rack_letters'].append(letter)
 
         # Ask user where to save the file
@@ -302,10 +343,6 @@ class ScrabbyGame:
             self.score = game_state['score']
             self.score_label.config(text=str(self.score))
             
-            # Restore current word
-            self.current_word = game_state['current_word']
-            self.word_display.config(text=self.current_word)
-            
             # Restore board state
             for pos, letter in game_state['board_state'].items():
                 row, col = map(int, pos.split(','))
@@ -314,17 +351,32 @@ class ScrabbyGame:
                 self.board_squares[row][col]['score_label'].config(text=str(self.letter_scores[letter]))
             
             # Restore rack letters
-            for letter in game_state['rack_letters']:
+            self.letter_vars = []
+            for i, letter in enumerate(game_state['rack_letters']):
                 score = self.letter_scores[letter]
-                btn = ttk.Button(
-                    self.tiles_frame,
-                    text=f"{letter}\n{score}",
-                    width=5,
-                    command=lambda l=letter: self.add_letter(l)
-                )
-                btn.grid(row=0, column=len(game_state['rack_letters'])-1, padx=2)
+                letter_var = tk.StringVar(value=letter)
+                self.letter_vars.append(letter_var)
                 
-            messagebox.showinfo("Success", "Game loaded successfully!")
+                tile_frame = ttk.Frame(self.tiles_frame)
+                tile_frame.grid(row=0, column=i, padx=2)
+
+                entry = ttk.Entry(
+                    tile_frame,
+                    textvariable=letter_var,
+                    width=2,
+                    justify='center',
+                    font=('Helvetica', 14, 'bold')
+                )
+                entry.grid(row=0, column=0)
+
+                score_label = ttk.Label(
+                    tile_frame,
+                    text=str(score),
+                    font=('Helvetica', 10)
+                )
+                score_label.grid(row=1, column=0)
+                
+            # messagebox.showinfo("Success", "Game loaded successfully!")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load game: {str(e)}")
 
@@ -350,7 +402,7 @@ class ScrabbyGame:
         letters_with_positions = []
         for i in range(self.BOARD_SIZE):
             for j in range(self.BOARD_SIZE):
-                letter = self.board_squares[i][j]['letter']
+                letter = self.board_squares[i][j]['var'].get()
                 if letter:
                     letters_with_positions.append((letter, i, j))
         
@@ -384,37 +436,6 @@ class ScrabbyGame:
         
         return final_score
 
-    def update_current_word(self):
-        """Update the display of the current word and its potential score"""
-        word = self.get_current_word()
-        if word:
-            score = self.calculate_word_score(word)
-            multiplier_text = ""
-            
-            # Check if any multipliers are being used
-            has_multipliers = False
-            letters_with_positions = []
-            for i in range(self.BOARD_SIZE):
-                for j in range(self.BOARD_SIZE):
-                    letter = self.board_squares[i][j]['letter']
-                    if letter:
-                        pos = (i, j)
-                        if (pos in self.special_squares['TW'] or 
-                            pos in self.special_squares['DW'] or
-                            pos in self.special_squares['TL'] or
-                            pos in self.special_squares['DL']):
-                            has_multipliers = True
-                        letters_with_positions.append((letter, i, j))
-            
-            if has_multipliers:
-                multiplier_text = "\n(includes special squares)"
-            
-            self.word_display.config(text=f"Current Word: {word}")
-            self.word_score_label.config(text=f"Word Score: {score}{multiplier_text}")
-        else:
-            self.word_display.config(text="")
-            self.word_score_label.config(text="")
-
     def on_square_edit(self, var, row, col):
         """Handle editing of a square's content"""
         value = var.get().upper()
@@ -424,7 +445,6 @@ class ScrabbyGame:
         if not value:
             square['letter'] = None
             square['score_label'].config(text="")
-            self.update_current_word()
             return
             
         # Only allow single letters
@@ -437,13 +457,11 @@ class ScrabbyGame:
         if not value.isalpha():
             var.set('')
             square['score_label'].config(text="")
-            self.update_current_word()
             return
             
         # Update the square's letter and score
         square['letter'] = value
         square['score_label'].config(text=str(self.letter_scores[value]))
-        self.update_current_word()
 
     def add_letter(self, letter):
         """When a rack letter is clicked, find the first empty square and place the letter there"""
@@ -455,15 +473,11 @@ class ScrabbyGame:
                     square['var'].set(letter)
                     square['letter'] = letter
                     square['score_label'].config(text=str(self.letter_scores[letter]))
-                    self.update_current_word()
                     return
 
     def clear_word(self):
         """Clear all squares on the board"""
         self.current_word = ""
-        self.word_display.config(text="")
-        self.word_score_label.config(text="")
-        self.selected_letter = None
         # Clear the board
         for row in self.board_squares:
             for square in row:
@@ -504,15 +518,129 @@ class ScrabbyGame:
         random.shuffle(letters)
 
         # Create letter tiles
+        self.letter_vars = []
         for i, letter in enumerate(letters):
-            score = self.letter_scores[letter]
-            tile = ttk.Button(
-                self.tiles_frame,
-                text=f"{letter}\n{score}",
-                width=5,
-                command=lambda l=letter: self.add_letter(l)
+            # Create frame for letter and score
+            tile_frame = ttk.Frame(self.tiles_frame)
+            tile_frame.grid(row=0, column=i, padx=2)
+
+            # Create StringVar for the letter
+            letter_var = tk.StringVar(value=letter)
+            self.letter_vars.append(letter_var)
+            letter_var.trace('w', lambda *args, var=letter_var: self.on_rack_letter_change(var))
+
+            # Create entry for letter
+            entry = ttk.Entry(
+                tile_frame,
+                textvariable=letter_var,
+                width=2,
+                justify='center',
+                font=('Helvetica', 14, 'bold')
             )
-            tile.grid(row=0, column=i, padx=2)
+            entry.grid(row=0, column=0)
+
+            # Create label for score
+            score_label = ttk.Label(
+                tile_frame,
+                text=str(self.letter_scores.get(letter, 0)),
+                font=('Helvetica', 10)
+            )
+            score_label.grid(row=1, column=0)
+
+    def on_rack_letter_change(self, var):
+        """Handle changes to rack letters"""
+        value = var.get().upper()
+        if len(value) > 1:
+            var.set(value[-1])  # Keep only the last character
+            return
+        
+        if value and not value.isalpha():
+            var.set('')  # Clear non-letter characters
+            return
+
+        var.set(value.upper())
+        
+        # Update score label if it exists
+        for widget in self.tiles_frame.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                entry = widget.grid_slaves(row=0, column=0)[0]
+                if entry.cget('textvariable') == str(var):
+                    score_label = widget.grid_slaves(row=1, column=0)[0]
+                    score_label.config(text=str(self.letter_scores.get(value, 0)))
+        
+        # Update best possible word
+        self.update_best_word()
+
+    def update_best_word(self):
+        """Calculate and display all possible words from rack letters"""
+        # Get current rack letters
+        rack_letters = []
+        for widget in self.tiles_frame.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                entry = widget.grid_slaves(row=0, column=0)[0]
+                letter = entry.get().upper()
+                if letter:
+                    rack_letters.append(letter)
+
+        # Clear existing items
+        for item in self.word_tree.get_children():
+            self.word_tree.delete(item)
+
+        if not rack_letters:
+            return
+
+        # Create a letter frequency map for our rack
+        letter_freq = {}
+        for letter in rack_letters:
+            letter_freq[letter] = letter_freq.get(letter, 0) + 1
+
+        # Find all possible words and their scores
+        possible_words = []
+        
+        # Check each word in our dictionary
+        for word in self.valid_words:
+            # Skip words longer than our rack
+            if len(word) > len(rack_letters):
+                continue
+                
+            # Check if we can make this word with our letters
+            word_freq = {}
+            for letter in word:
+                word_freq[letter] = word_freq.get(letter, 0) + 1
+                
+            can_make_word = True
+            for letter, count in word_freq.items():
+                if letter not in letter_freq or letter_freq[letter] < count:
+                    can_make_word = False
+                    break
+                    
+            if can_make_word:
+                score = sum(self.letter_scores[letter] for letter in word)
+                possible_words.append((word, score))
+
+        # Sort by score (descending)
+        possible_words.sort(key=lambda x: (-x[1], x[0]))
+
+        # Update display
+        for word, score in possible_words:
+            self.word_tree.insert('', 'end', values=(word, score))
+
+    def is_valid_word(self, word):
+        """Check if a word is valid using the loaded word list"""
+        return word.upper() in self.valid_words
+
+    def clear_game(self):
+        """Reset the entire game state"""
+        # Clear the board
+        self.clear_board()
+        # Clear the rack
+        self.clear_rack()
+        # Reset score
+        self.score = 0
+        self.score_label.config(text="0")
+        # Generate new letters
+        self.generate_new_letters()
+        self.update_best_word()
 
 def main():
     root = tk.Tk()
